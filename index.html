@@ -2,33 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1, viewport-fit=cover"
-  />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Screen Time Widget Prototype</title>
   <link rel="stylesheet" href="style.css" />
   <meta name="description" content="Prototype of an adaptive, emotion-driven screen time widget with learning overlays." />
 </head>
 <body>
-  <!--
-    HOW TO USE
-    1) Put your iPhone frame PNG at images/iphone_frame.png
-    2) Press Play to simulate. Use +5m to jump.
-    3) Overlays appear at thresholds t_minus, t_zero, t_plus.
-    4) Learning + day demo lives in localStorage (keys: stw_*).
-  -->
-
   <main class="page">
     <header class="topbar">
       <h1>Screen Time Widget
         <span class="chip chip--muted" id="dayChip">Day <span id="dayChipValue">1</span></span>
       </h1>
-      <!-- settings button removed -->
     </header>
 
     <section class="frame-wrap">
-      <!-- iPhone frame -->
       <div class="phone-frame">
         <div class="phone-frame__image" aria-hidden="true"></div>
 
@@ -77,7 +64,18 @@
               </div>
               <div class="legend">
                 <span id="deltaToYesterday">230 min left</span>
-                <span id="avg7Label">7-day avg: 4h 05m</span>
+                <span class="avg-wrap">
+                  <span id="avg7Label">7-day avg: 4h 05m</span>
+                  <button
+                    class="icon-btn"
+                    id="avgInfoBtn"
+                    type="button"
+                    aria-label="What does 7-day average mean?"
+                    aria-expanded="false"
+                    aria-controls="avgInfoModal"
+                    title="Info"
+                  >i</button>
+                </span>
               </div>
             </div>
 
@@ -100,6 +98,29 @@
               </div>
             </div>
           </div>
+
+          <!-- In-frame info modal (lives INSIDE the phone screen) -->
+          <div
+            id="avgInfoModal"
+            class="inframe-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="avgInfoTitle"
+            aria-hidden="true"
+          >
+            <div class="inframe-modal__scrim" data-close="avg"></div>
+            <div class="inframe-modal__card">
+              <h4 id="avgInfoTitle">About the 7-day average</h4>
+              <p>
+                This shows your average screen time over the last seven days. Each new day replaces the oldest one.
+                Today’s minutes only count after you move to the next day.
+              </p>
+              <div class="dialog-actions">
+                <button class="btn primary" id="avgInfoCloseBtn" type="button" aria-label="Close info">Got it</button>
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -138,7 +159,6 @@
           </select>
         </div>
 
-        <!-- Day controls -->
         <div class="row inline">
           <label class="checkbox">
             <input type="checkbox" id="carryCheckbox" checked />
@@ -156,8 +176,6 @@
       </aside>
     </section>
   </main>
-
-  <!-- Settings drawer removed -->
 
   <script src="app.js"></script>
 </body>

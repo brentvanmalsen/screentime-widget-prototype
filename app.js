@@ -15,6 +15,11 @@ const els = {
   deltaToYesterday: document.getElementById("deltaToYesterday"),
   avg7Label: document.getElementById("avg7Label"),
 
+  // avg info UI
+  avgInfoBtn: document.getElementById("avgInfoBtn"),
+  avgInfoModal: document.getElementById("avgInfoModal"),
+  avgInfoCloseBtn: document.getElementById("avgInfoCloseBtn"),
+
   // controls
   playPauseBtn: document.getElementById("playPauseBtn"),
   add5Btn: document.getElementById("add5Btn"),
@@ -26,7 +31,6 @@ const els = {
   avg7Input: document.getElementById("avg7Input"),
   tMinusInput: document.getElementById("tMinusInput"),
   tPlusInput: document.getElementById("tPlusInput"),
-  // todInput is niet meer zichtbaar; optioneel aanwezig
   todInput: document.getElementById("todInput"),
   activity: document.getElementById("activity"),
   carryCheckbox: document.getElementById("carryCheckbox"),
@@ -52,17 +56,17 @@ const initialState = {
   yesterday: 230,
   today: 0,
   avg7: 245,
+  last7: [245, 245, 245, 245, 245, 245, 245],
   thresholds: { t_minus: 15, t_zero: 0, t_plus: 15 },
-  timeOfDay: "evening", // intern, geen UI
+  timeOfDay: "evening",
   activity: "shortform",
   goal: 200,
   tonePref: "auto",
   lang: "en",
   fired: { t_minus: false, t_zero: false, t_plus: false },
 
-  // voor day-to-day context
-  lastOutcome: null,            // "acted" | "dismissed" | null
-  lastOutcomeStage: null,       // "t_minus" | "t_zero" | "t_plus" | null
+  lastOutcome: null,
+  lastOutcomeStage: null,
 };
 
 const initialLearning = {
@@ -73,9 +77,13 @@ const initialLearning = {
 let state    = load("stw_state", initialState);
 let learning = load("stw_learning", initialLearning);
 if (typeof state.day !== "number") state.day = 1;
+if (!Array.isArray(state.last7) || state.last7.length !== 7) {
+  state.last7 = Array(7).fill(state.avg7 ?? 245);
+  save("stw_state", state);
+}
 
 let tickHandle = null;
-let wasRunningBeforeOverlay = false; // pauze/herstart overlay
+let wasRunningBeforeOverlay = false;
 
 // ------- Utils -------
 function load(key, fallback){
@@ -89,21 +97,25 @@ function clamp01(x){ return Math.max(0, Math.min(1, x)); }
 function minToHM(min){ const h = Math.floor(min/60); const m = min%60; return `${h}h ${String(m).padStart(2,"0")}m`; }
 function fmtPercent(x){ return `${Math.round(x*100)}%`; }
 function cap(s){ return s.slice(0,1).toUpperCase()+s.slice(1); }
+function mean(arr){ return arr.reduce((a,b)=>a+b,0) / (arr.length||1); }
 
-// Fake stats helpers
+const ACTIVITY_LABELS = {
+  shortform: "Short-form video",
+  streaming: "Streaming",
+  gaming:    "Gaming",
+  social:    "Social",
+  other:     "Other",
+};
+
+// Fake stats
 function seedRand(seedStr){
   let h=0; for(let i=0;i<seedStr.length;i++){ h = Math.imul(31,h) + seedStr.charCodeAt(i) | 0; }
   return () => { h = Math.imul(1664525,h+1013904223) | 0; return ((h>>>0)%1000)/1000; };
 }
-
-/**
- * Returns cohort insight for given "today" minutes.
- * betterThan = percentage of cohort you are beating (you have less screen time than X% of peers).
- */
 function fakeStats({day, activity, timeOfDay, stage, todayMin, avg7}){
   const rnd = seedRand(`${day}-${activity}-${timeOfDay}-${stage}-${todayMin}-${avg7}`);
-  const betterThan = Math.floor(40 + rnd()*50); // 40–90
-  const weekDelta  = avg7 - todayMin;           // positive means under avg
+  const betterThan = Math.floor(40 + rnd()*50);
+  const weekDelta  = avg7 - todayMin;
   const cohortAvg  = Math.max(0, Math.round(todayMin + (rnd()*40 - 20)));
   const labels = {
     shortform: "short-form scrollers",
@@ -115,7 +127,6 @@ function fakeStats({day, activity, timeOfDay, stage, todayMin, avg7}){
   return { betterThan, weekDelta, cohortAvg, cohortLabel: labels[activity] || "users" };
 }
 
-// ------- Copy: titles zonder em-dash -------
 const TITLE_VARIANTS = {
   motivational: ["Yes! Early win", "Crushing it", "Nice pace", "On top of your time"],
   mixed:        ["Careful, tipping point", "On the edge", "Borderline scroll", "Right on the line"],
@@ -124,7 +135,6 @@ const TITLE_VARIANTS = {
 
 // ------- Learning -------
 function pickHook(){
-  // hook is niet zichtbaar, maar blijft intern voor learning
   const s = { ...learning.hookScores };
   if (state.activity === "shortform"){ s.regret += 0.2; s.focus += 0.1; }
   if (state.activity === "streaming" || state.activity === "gaming"){
@@ -141,8 +151,8 @@ function nextTone(trigger, result){
   const order = ["motivational", "mixed", "confrontational"];
   let cur = learning.toneByTrigger[trigger] || "mixed";
   let i = order.indexOf(cur);
-  if (result === "acted" && i>0) i -= 1;                           // zachter bij goed gedrag
-  if ((result==="ignored"||result==="dismissed") && i<order.length-1) i += 1; // scherper bij negeren
+  if (result === "acted" && i>0) i -= 1;
+  if ((result==="ignored"||result==="dismissed") && i<order.length-1) i += 1;
   learning.toneByTrigger[trigger] = order[i];
   save("stw_learning", learning);
   return order[i];
@@ -153,7 +163,7 @@ function reinforceHook(hook, result){
   save("stw_learning", learning);
 }
 
-// ------- Helpers voor boodschap-opbouw -------
+// ------- Helpers voor message-body -------
 function yesterdayLine(){
   if (state.day <= 1) return "";
   const stg = state.lastOutcomeStage;
@@ -171,47 +181,19 @@ function yesterdayLine(){
   }
   return "";
 }
-
-/**
- * Bouw een duidelijke, specifieke body die stop-nu > doorgaan communiceert.
- * Nieuwe regels:
- * - Motivational: GEEN projectiezin. Alleen stop-nu + trend.
- * - Mixed: projectiezin is ALTIJD negatief geformuleerd (doorgaan maakt je slechter today).
- * - Confrontational: nu-stand is negatief, projectie is ook negatief.
- * - Alle zinnen benoemen expliciet "today".
- */
 function buildBody(tone, stage){
-  // extra minuten om te projecteren per moment (gebruikt voor mixed/confrontational)
   const extra = stage === "early" ? 10 : stage === "match" ? 10 : 30;
 
-  const now  = fakeStats({
-    day: state.day, activity: state.activity, timeOfDay: state.timeOfDay,
-    stage, todayMin: state.today, avg7: state.avg7
-  });
+  const now  = fakeStats({ day: state.day, activity: state.activity, timeOfDay: state.timeOfDay, stage, todayMin: state.today, avg7: state.avg7 });
+  const proj = fakeStats({ day: state.day, activity: state.activity, timeOfDay: state.timeOfDay, stage, todayMin: state.today + extra, avg7: state.avg7 });
 
-  const proj = fakeStats({
-    day: state.day, activity: state.activity, timeOfDay: state.timeOfDay,
-    stage, todayMin: state.today + extra, avg7: state.avg7
-  });
-
-  // Richting forceren: projectie is ongunstiger dan nu
-  let betterNow  = now.betterThan;    // % dat jij vandaag verslaat (minder dan jij)
+  let betterNow  = now.betterThan;
   let betterProj = proj.betterThan;
+  if (betterProj > betterNow) betterProj = Math.max(0, betterNow - Math.max(3, Math.round(extra / 4)));
 
-  // Maak projectie altijd <= nu, met marge
-  if (betterProj > betterNow) {
-    betterProj = Math.max(0, betterNow - Math.max(3, Math.round(extra / 4)));
-  }
-
-  // Voor confrontational gebruiken we "worse than"
-  const worseNow  = 100 - betterNow;
-  let worseProj   = 100 - betterProj;
-
-  // Zorg dat worseProj >= worseNow (doorgaan is slechter)
-  if (worseProj < worseNow) {
-    worseProj = Math.min(100, worseNow + Math.max(3, Math.round(extra / 4)));
-    betterProj = 100 - worseProj; // consistent
-  }
+  const worseNow = 100 - betterNow;
+  let worseProj  = 100 - betterProj;
+  if (worseProj < worseNow) { worseProj = Math.min(100, worseNow + Math.max(3, Math.round(extra / 4))); betterProj = 100 - worseProj; }
 
   const cohort = now.cohortLabel;
   const yLine = yesterdayLine();
@@ -220,42 +202,34 @@ function buildBody(tone, stage){
     ? `You are ${minToHM(now.weekDelta)} under your 7-day average today.`
     : `You are ${minToHM(Math.abs(now.weekDelta))} over your 7-day average today.`;
 
-  // Stop-nu zin
   const stopNowLine =
     tone === "confrontational"
       ? `Right now you have more screen time than about ${worseNow}% of ${cohort} today.`
       : `If you stop now, you will have less screen time than about ${betterNow}% of ${cohort} today.`;
 
-  // Projectiezin per tone (alleen als het iets negatiefs benadrukt)
   let continueLine = "";
   if (tone === "mixed") {
     continueLine = `If you keep scrolling for ${extra} more minutes, you will have more screen time than about ${worseProj}% of ${cohort} today.`;
   } else if (tone === "confrontational") {
     continueLine = `Every extra ${extra} minutes puts you behind about ${worseProj}% of ${cohort} today.`;
   }
-  // Motivational bevat GEEN continueLine
 
   const closer =
     tone === "motivational" ? "Lock this in with a short pause."
       : tone === "mixed"    ? "Small decision, big effect. Take a short pause."
       : "Cut it now and cap the loss.";
 
-  // Combineer, zonder em-dashes en zonder ‘positieve’ projecties
-  return [yLine, stopNowLine, trendLineNow, continueLine, closer]
-    .filter(Boolean)
-    .join(" ");
+  return [yLine, stopNowLine, trendLineNow, continueLine, closer].filter(Boolean).join(" ");
 }
 
 // ------- Overlay (pauzeer timer tot klik) -------
 function buildOverlay(trigger){
   const stage = trigger === "t_minus" ? "early" : (trigger === "t_zero" ? "match" : "over");
 
-  // baseline tone per trigger, tenzij user-pref
   let tone  = (state.tonePref === "auto")
     ? (learning.toneByTrigger[trigger] || (stage==="early"?"motivational":stage==="match"?"mixed":"confrontational"))
     : state.tonePref;
 
-  // starttoon kleuren o.b.v. gisteren wanneer dag net begint
   if (state.today === 0 && !state.fired.t_minus && state.lastOutcomeStage){
     if (state.lastOutcome === "acted"){
       if (state.lastOutcomeStage === "t_minus") tone = "motivational";
@@ -272,18 +246,16 @@ function buildOverlay(trigger){
   const title    = titles[(state.day + titles.length) % titles.length];
   const body     = buildBody(tone, stage);
 
-  // Kicker: alleen toon
-  els.overlayKicker.textContent = cap(tone);
+  const actLabel = ACTIVITY_LABELS[state.activity] || "Other";
+  els.overlayKicker.textContent = `${cap(tone)} • ${actLabel}`;
   els.overlayTitle.textContent  = title;
   els.overlayBody.textContent   = body;
 
-  // Tone accent
   els.overlay.querySelector(".overlay-card").style.borderColor =
-    tone==="motivational" ? "rgba(66,200,138,0.7)" :
-    tone==="mixed"        ? "rgba(246,198,99,0.7)" :
-                            "rgba(239,107,107,0.7)";
+    tone==="motivational" ? "rgba(66,200,138,0.7)"
+    : tone==="mixed"      ? "rgba(246,198,99,0.7)"
+                          : "rgba(239,107,107,0.7)";
 
-  // Pauzeer tot klik
   wasRunningBeforeOverlay = !!tickHandle;
   stopTick();
   els.overlay.setAttribute("aria-hidden", "false");
@@ -293,20 +265,17 @@ function buildOverlay(trigger){
     if (result) {
       state.lastOutcome = result;
       state.lastOutcomeStage = trigger;
-      // learning updates
-      const hook = pickHook(); // intern
+      const hook = pickHook();
       nextTone(trigger, result);
       reinforceHook(hook, result);
       if (result === "acted") stopTick();
       save("stw_state", state);
     }
-    // hervat alleen als hij liep en user NIET "acted" deed
     if (wasRunningBeforeOverlay && result !== "acted") startTick();
   };
 
   els.ctaPause.onclick = () => closeOverlay("acted");
   els.ctaLater.onclick = () => closeOverlay("dismissed");
-  // Klik buiten de kaart: sluiten (geen learning)
   els.overlay.onclick = (e) => { if (e.target === els.overlay) closeOverlay(null); };
 }
 
@@ -347,31 +316,36 @@ function render(){
 
   els.avg7Label.textContent = `${state.lang === "nl" ? "7-daags gem." : "7-day avg"}: ${minToHM(state.avg7)}`;
 
-  // panel sync
   els.todayInput.value     = state.today;
   els.yesterdayInput.value = state.yesterday;
   els.avg7Input.value      = state.avg7;
   els.tMinusInput.value    = state.thresholds.t_minus;
   els.tPlusInput.value     = state.thresholds.t_plus;
 
-  // day chips
   if (els.dayChipValue) els.dayChipValue.textContent = String(state.day);
   if (els.dayLabelSide) els.dayLabelSide.textContent = `Day ${state.day}`;
 }
 
 function resetFired(){ state.fired = { t_minus:false, t_zero:false, t_plus:false }; }
 
+// ------- 7-day avg helpers -------
+function pushIntoLast7(value){
+  if (!Array.isArray(state.last7)) state.last7 = [];
+  state.last7.push(Math.max(0, Math.round(value)));
+  while (state.last7.length > 7) state.last7.shift();
+  state.avg7 = Math.round(mean(state.last7));
+}
+
 // ------- Day flow -------
 function nextDay(){
   const carry = !!els.carryCheckbox?.checked;
   if (carry) state.yesterday = state.today;
 
+  pushIntoLast7(state.yesterday);
+
   state.today = 0;
   state.day   = (state.day||1) + 1;
   resetFired();
-
-  // simpele moving average
-  state.avg7 = Math.round((state.avg7*6 + state.yesterday)/7);
 
   save("stw_state", state);
   render();
@@ -379,7 +353,7 @@ function nextDay(){
 
 // ------- Timer -------
 function tick(){
-  state.today += 1; // +1 minute
+  state.today += 1;
   save("stw_state", state);
   render();
   maybeTrigger();
@@ -408,11 +382,16 @@ Activity: ${state.activity}`);
 });
 
 els.yesterdayInput.addEventListener("input", e => { state.yesterday = parseInt(e.target.value||"0",10); resetFired(); save("stw_state", state); render(); });
-els.todayInput.addEventListener("input",     e => { state.today     = parseInt(e.target.value||"0",10); save("stw_state", state); render(); });
-els.avg7Input.addEventListener("input",      e => { state.avg7      = parseInt(e.target.value||"0",10); save("stw_state", state); render(); });
-els.tMinusInput.addEventListener("input",    e => { state.thresholds.t_minus = parseInt(e.target.value||"15",10); resetFired(); save("stw_state", state); render(); });
-els.tPlusInput.addEventListener("input",     e => { state.thresholds.t_plus  = parseInt(e.target.value||"15",10); resetFired(); save("stw_state", state); render(); });
-els.activity.addEventListener("input",       e => { state.activity  = e.target.value; save("stw_state", state); render(); });
+els.todayInput.addEventListener("input", e => { state.today = parseInt(e.target.value||"0",10); save("stw_state", state); render(); });
+els.avg7Input.addEventListener("input", e => {
+  state.avg7 = parseInt(e.target.value||"0",10);
+  state.last7 = Array(7).fill(Math.max(0, state.avg7));
+  save("stw_state", state);
+  render();
+});
+els.tMinusInput.addEventListener("input", e => { state.thresholds.t_minus = parseInt(e.target.value||"15",10); resetFired(); save("stw_state", state); render(); });
+els.tPlusInput.addEventListener("input", e => { state.thresholds.t_plus  = parseInt(e.target.value||"15",10); resetFired(); save("stw_state", state); render(); });
+els.activity.addEventListener("input", e => { state.activity = e.target.value; save("stw_state", state); render(); });
 
 els.nextDayBtn.addEventListener("click", nextDay);
 
@@ -428,13 +407,44 @@ els.resetLearning.addEventListener("click", () => {
   }
 });
 
+// ------- In-frame info modal -------
+function setupAvgInfo(){
+  if (!els.avgInfoBtn || !els.avgInfoModal) return;
+
+  const open = () => {
+    els.avgInfoBtn.setAttribute("aria-expanded","true");
+    els.avgInfoModal.setAttribute("aria-hidden","false");
+  };
+  const close = () => {
+    els.avgInfoBtn.setAttribute("aria-expanded","false");
+    els.avgInfoModal.setAttribute("aria-hidden","true");
+  };
+  const toggle = () => {
+    const expanded = els.avgInfoBtn.getAttribute("aria-expanded") === "true";
+    expanded ? close() : open();
+  };
+
+  els.avgInfoBtn.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
+  els.avgInfoCloseBtn.addEventListener("click", close);
+
+  // click on scrim closes
+  els.avgInfoModal.addEventListener("click", (e) => {
+    if (e.target.matches('.inframe-modal__scrim')) close();
+  });
+
+  // Esc closes
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+
+  // click outside the phone-screen shouldn't affect it; we only listen inside
+}
+
 // ------- Boot -------
 function boot(){
-  // Verwijder de "Time of day" rij uit het paneel (indien nog aanwezig in HTML)
   const todRow = els.todInput?.closest(".row");
   if (todRow) todRow.remove();
 
+  setupAvgInfo();
   render();
-  // startTick(); // optioneel
+  // startTick(); // optional
 }
 boot();
